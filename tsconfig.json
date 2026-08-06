@@ -18,5 +18,5 @@
     "moduleDetection": "force",
     "skipLibCheck": true
   },
-  "include": ["*.ts", "0*.ts", "src/02-agent.ts", "src/03-agent.ts", "src/04-agent.ts", "src/prompt.ts"]
+  "include": ["src/**/*.ts"]
 }
