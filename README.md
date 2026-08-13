@@ -8,6 +8,7 @@
 - **Plan-and-Execute**（规划 → 执行 → 汇总）多 Agent 协作
 - 本地 Markdown **知识库检索（轻量 RAG）**
 - **工具设计对比**（烂工具 vs 好工具）
+- **LangGraph** 状态图 Agent（图编排 + 条件边）
 
 ## 环境要求
 
@@ -40,13 +41,14 @@ min-agent/
 │   │   ├── knowledge.ts         # 加载 knowledge/*.md 并切块
 │   │   ├── chunk.ts             # 按 ## 标题切块 + 关键词检索
 │   │   └── knowledge/           # 本地知识库（退款、差旅、系列备忘等）
-│   ├── 08-tool-design/          # 工具设计对比版（默认启动入口）
+│   ├── 08-tool-design/          # 工具设计对比版
 │   │   ├── agent.ts             # 入口：--bad / --good 切换工具实现
 │   │   ├── tools-bad.ts         # 反面教材：含糊描述、空串、抛异常
 │   │   ├── tools-good.ts        # 正面示例：清晰说明书、结构化返回、失败 tip
 │   │   ├── kb.ts                # 知识块加载与关键词检索
 │   │   ├── prompt.ts            # 按模式组装 System Prompt
 │   │   └── knowledge/           # 政策文档（退款、差旅）
+│   ├── 09-langgraph.ts          # LangGraph 版（默认启动入口）
 │   ├── prompt.ts                # 可配置的 Agent System Prompt 构建器（02～05）
 │   ├── tools.ts                 # 05 版工具定义
 │   ├── memory.ts                # 会话过长时压缩为摘要
@@ -72,6 +74,7 @@ min-agent/
 5. **06**：Plan-and-Execute — Planner 生成计划，Executor 逐步执行并落盘
 6. **07**：本地 Markdown 知识库切块 + `search_knowledge` 检索问答
 7. **08**：同一知识库下对比「烂工具 / 好工具」，体会工具说明书与返回契约的重要性
+8. **09**：用 LangGraph 把手搓循环改成状态图（`llmCall` ↔ `toolNode` + 条件边）
 
 ## 快速开始
 
@@ -101,21 +104,17 @@ DEEPSEEK_API_KEY=sk-你的密钥
 
 ### 3. 启动
 
-默认运行 `src/08-tool-design/agent.ts`（好工具模式）：
+默认运行 `src/09-langgraph.ts`（LangGraph Agent）：
 
 ```bash
 npm start
-# 等价于
-npm run start:good
 ```
 
-对比烂工具：
+不传参数时使用内置示例目标（查深圳天气并换算华氏度）。自定义目标：
 
 ```bash
-npm run start:bad
+npm start -- 北京现在天气怎么样？顺便告诉我气温对应的华氏度
 ```
-
-建议同一问题各跑一遍，观察 Thought / Action / Observation 的差异。输入 `exit` 或 `quit` 退出。
 
 运行其他版本：
 
@@ -129,6 +128,7 @@ npx tsx src/06-agents/06-agents.ts -- 根据笔记整理本周工作要点并保
 npx tsx src/07-agents/07-agents.ts
 npx tsx src/08-tool-design/agent.ts --good
 npx tsx src/08-tool-design/agent.ts --bad
+npx tsx src/09-langgraph.ts
 ```
 
 05 / 07 / 08 为交互式 CLI，启动后输入问题；输入 `exit` 或 `quit` 退出。
@@ -139,23 +139,37 @@ npx tsx src/08-tool-design/agent.ts --bad
 npm run typecheck
 ```
 
+## 09 LangGraph 版
+
+09 用 [@langchain/langgraph](https://langchain-ai.github.io/langgraphjs/) 把「手搓 while 循环」改成显式状态图，语义与第 03 篇 ReAct 一致，但路由由图边表达。
+
+图结构：
+
+```text
+START → llmCall ─┬─(有 tool_calls)→ toolNode → llmCall → …
+                 └─(无工具 / 达上限)→ END
+```
+
+| 部分 | 说明 |
+| --- | --- |
+| 状态 | `MessagesAnnotation`：对话消息列表自动追加 |
+| `llmCall` | `ChatOpenAI.bindTools` 调模型，打印 Thought / Action |
+| `toolNode` | 按 `tool_calls` 执行本地工具，写回 `ToolMessage`（带 `tool_call_id`） |
+| `shouldContinue` | 条件边：有工具则进 `toolNode`，否则 `END`；超过 `MAX_STEPS` 强制结束 |
+| 工具 | `get_weather`、`celsius_to_fahrenheit`（Zod schema + `tool()`） |
+
+类型守卫请用 `AIMessage.isInstance(msg)`（`isAIMessage` 已弃用）。
+
+DeepSeek 通过 OpenAI 兼容协议接入：`ChatOpenAI` + `baseURL: https://api.deepseek.com`。
+
 ## 08 工具设计对比
 
 08 用同一套政策知识库，切换两套工具实现，演示 **工具说明书、参数命名、返回结构、失败处理** 如何影响 Agent 表现。
 
 | 模式 | 启动 | 工具名 | 特点 |
 | --- | --- | --- | --- |
-| 好工具 | `npm run start:good` | `search_policy` | 描述清晰、结构化 JSON（`ok` / `hits` / `tip`）、空结果给 tip、禁止编造 |
-| 烂工具 | `npm run start:bad` | `search` | 描述含糊、参数名 `q`、空结果返回空串、解析失败直接抛异常 |
-
-试着问：
-
-```text
-签收后几天内可以无理由退款？审核和到账大概多久？
-杭州出差住宿上限是多少？
-```
-
-好工具模式下，最终答复应能带来源（文件名 + 标题）；烂工具模式下更容易空转、编造或异常中断。
+| 好工具 | `npx tsx src/08-tool-design/agent.ts --good` | `search_policy` | 描述清晰、结构化 JSON（`ok` / `hits` / `tip`）、空结果给 tip |
+| 烂工具 | `npx tsx src/08-tool-design/agent.ts --bad` | `search` | 描述含糊、空结果返回空串、解析失败抛异常 |
 
 ## 07 知识库检索版
 
@@ -202,9 +216,11 @@ npm run typecheck
 
 - **运行时**：Node.js + ESM（`"type": "module"`）
 - **执行**：[`tsx`](https://github.com/privatenumber/tsx) 直接运行 TypeScript
-- **模型 SDK**：[`openai`](https://github.com/openai/openai-node)（兼容 DeepSeek OpenAI 风格接口）
+- **模型 SDK**：[`openai`](https://github.com/openai/openai-node)（02～08 手搓示例）
+- **LangChain / LangGraph**：`@langchain/core`、`@langchain/openai`、`@langchain/langgraph`（09）
+- **校验**：[`zod`](https://zod.dev/)（09 工具参数 schema）
 - **配置**：[`dotenv`](https://github.com/motdotla/dotenv) 加载 `.env`
-- **模型**：多数示例用 `deepseek-v4-flash`；08 工具设计版默认 `deepseek-chat`；`baseURL` 为 `https://api.deepseek.com`
+- **模型**：默认 `deepseek-v4-flash`；`baseURL` 为 `https://api.deepseek.com`
 
 ## 工作原理（简要）
 
@@ -214,13 +230,13 @@ npm run typecheck
 4. 多轮时：过长则摘要压缩；偏好变更则落盘并刷新 system
 5. **06**：Planner 拆任务 → Executor 逐步执行 → 汇总
 6. **07 / 08**：先检索本地知识块，再据 Observation 作答；08 额外对比工具契约质量
+7. **09**：用 StateGraph 显式表达「决策节点 / 执行节点 / 条件边」，替代手写 while
 
 ## 常用脚本
 
 | 命令 | 说明 |
 | --- | --- |
-| `npm start` / `npm run start:good` | 08 好工具模式（默认） |
-| `npm run start:bad` | 08 烂工具模式（对比用） |
+| `npm start` | 启动默认 Agent（`src/09-langgraph.ts`） |
 | `npm run typecheck` | `tsc --noEmit` 类型检查 |
 
 ## 许可
