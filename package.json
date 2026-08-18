@@ -5,7 +5,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "tsx src/09-langgraph.ts",
+    "start": "tsx src/10-multi-agent/agent.ts",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],

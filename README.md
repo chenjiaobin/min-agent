@@ -9,6 +9,7 @@
 - 本地 Markdown **知识库检索（轻量 RAG）**
 - **工具设计对比**（烂工具 vs 好工具）
 - **LangGraph** 状态图 Agent（图编排 + 条件边）
+- **多 Agent 协作**（研究员检索写黑板 → 写手只读成稿）
 
 ## 环境要求
 
@@ -48,7 +49,14 @@ min-agent/
 │   │   ├── kb.ts                # 知识块加载与关键词检索
 │   │   ├── prompt.ts            # 按模式组装 System Prompt
 │   │   └── knowledge/           # 政策文档（退款、差旅）
-│   ├── 09-langgraph.ts          # LangGraph 版（默认启动入口）
+│   ├── 09-langgraph.ts          # LangGraph 版：状态图编排 ReAct
+│   ├── 10-multi-agent/          # 多 Agent 协作版（默认启动入口）
+│   │   ├── agent.ts             # 入口：研究员 → 写手
+│   │   ├── blackboard.ts        # 共享黑板（goal / notes / draft / log）
+│   │   ├── researcher.ts        # 研究员：search_notes + write_notes
+│   │   ├── writer.ts            # 写手：无工具，只读黑板成稿
+│   │   ├── kb.ts                # 本地笔记切块与检索
+│   │   └── knowledge/           # 差旅报销、入职须知等笔记
 │   ├── prompt.ts                # 可配置的 Agent System Prompt 构建器（02～05）
 │   ├── tools.ts                 # 05 版工具定义
 │   ├── memory.ts                # 会话过长时压缩为摘要
@@ -75,6 +83,7 @@ min-agent/
 6. **07**：本地 Markdown 知识库切块 + `search_knowledge` 检索问答
 7. **08**：同一知识库下对比「烂工具 / 好工具」，体会工具说明书与返回契约的重要性
 8. **09**：用 LangGraph 把手搓循环改成状态图（`llmCall` ↔ `toolNode` + 条件边）
+9. **10**：多 Agent 最小协作 — 研究员检索并写入黑板，写手只读 notes 成稿
 
 ## 快速开始
 
@@ -104,16 +113,16 @@ DEEPSEEK_API_KEY=sk-你的密钥
 
 ### 3. 启动
 
-默认运行 `src/09-langgraph.ts`（LangGraph Agent）：
+默认运行 `src/10-multi-agent/agent.ts`（研究员 → 写手）：
 
 ```bash
 npm start
 ```
 
-不传参数时使用内置示例目标（查深圳天气并换算华氏度）。自定义目标：
+不传参数时使用内置示例目标（根据笔记写「杭州差旅报销要点」）。自定义目标：
 
 ```bash
-npm start -- 北京现在天气怎么样？顺便告诉我气温对应的华氏度
+npm start -- 根据笔记，写一段入职第一周的注意事项给新同事看
 ```
 
 运行其他版本：
@@ -129,6 +138,7 @@ npx tsx src/07-agents/07-agents.ts
 npx tsx src/08-tool-design/agent.ts --good
 npx tsx src/08-tool-design/agent.ts --bad
 npx tsx src/09-langgraph.ts
+npx tsx src/10-multi-agent/agent.ts
 ```
 
 05 / 07 / 08 为交互式 CLI，启动后输入问题；输入 `exit` 或 `quit` 退出。
@@ -138,6 +148,28 @@ npx tsx src/09-langgraph.ts
 ```bash
 npm run typecheck
 ```
+
+## 10 多 Agent 协作版
+
+10 演示最小多 Agent 流水线：两个角色**不共享对话历史**，只通过黑板传递可验收事实。
+
+```text
+用户目标
+  → 研究员（可调用 search_notes / write_notes）
+  → 黑板 notes[]（source + point）
+  → 写手（无工具，只读 notes 成稿）
+  → board.draft
+```
+
+| 模块 | 职责 |
+| --- | --- |
+| `blackboard.ts` | 共享状态：`goal`、`notes`、`draft`、`log` |
+| `researcher.ts` | 检索本地 `knowledge/*.md`，把带来源的要点写入黑板 |
+| `writer.ts` | 禁止搜索、禁止编造；200 字以内正文 + 依据来源 |
+| `kb.ts` | 按 `##` 切块 + 关键词检索 |
+| `agent.ts` | 顺序编排：研究员跑完再跑写手，最后打印草稿与 board log |
+
+写手看不到研究员的 Thought / Observation，只能看到 `notes`。这避免把整段检索过程塞进第二个模型的上下文。
 
 ## 09 LangGraph 版
 
@@ -218,6 +250,7 @@ DeepSeek 通过 OpenAI 兼容协议接入：`ChatOpenAI` + `baseURL: https://api
 - **执行**：[`tsx`](https://github.com/privatenumber/tsx) 直接运行 TypeScript
 - **模型 SDK**：[`openai`](https://github.com/openai/openai-node)（02～08 手搓示例）
 - **LangChain / LangGraph**：`@langchain/core`、`@langchain/openai`、`@langchain/langgraph`（09）
+- **多 Agent**：10 用手搓 OpenAI SDK + 共享黑板（不依赖 LangGraph Supervisor）
 - **校验**：[`zod`](https://zod.dev/)（09 工具参数 schema）
 - **配置**：[`dotenv`](https://github.com/motdotla/dotenv) 加载 `.env`
 - **模型**：默认 `deepseek-v4-flash`；`baseURL` 为 `https://api.deepseek.com`
@@ -231,12 +264,13 @@ DeepSeek 通过 OpenAI 兼容协议接入：`ChatOpenAI` + `baseURL: https://api
 5. **06**：Planner 拆任务 → Executor 逐步执行 → 汇总
 6. **07 / 08**：先检索本地知识块，再据 Observation 作答；08 额外对比工具契约质量
 7. **09**：用 StateGraph 显式表达「决策节点 / 执行节点 / 条件边」，替代手写 while
+8. **10**：研究员写黑板 → 写手读黑板；协作靠结构化 notes，而不是拼接两段聊天记录
 
 ## 常用脚本
 
 | 命令 | 说明 |
 | --- | --- |
-| `npm start` | 启动默认 Agent（`src/09-langgraph.ts`） |
+| `npm start` | 启动默认 Agent（`src/10-multi-agent/agent.ts`） |
 | `npm run typecheck` | `tsc --noEmit` 类型检查 |
 
 ## 许可
