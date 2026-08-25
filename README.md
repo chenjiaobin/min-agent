@@ -10,6 +10,7 @@
 - **工具设计对比**（烂工具 vs 好工具）
 - **LangGraph** 状态图 Agent（图编排 + 条件边）
 - **多 Agent 协作**（研究员检索写黑板 → 写手只读成稿）
+- **可观测性与评测**（Trace 落盘 + 用例断言）
 
 ## 环境要求
 
@@ -50,17 +51,26 @@ min-agent/
 │   │   ├── prompt.ts            # 按模式组装 System Prompt
 │   │   └── knowledge/           # 政策文档（退款、差旅）
 │   ├── 09-langgraph.ts          # LangGraph 版：状态图编排 ReAct
-│   ├── 10-multi-agent/          # 多 Agent 协作版（默认启动入口）
+│   ├── 10-multi-agent/          # 多 Agent 协作版
 │   │   ├── agent.ts             # 入口：研究员 → 写手
 │   │   ├── blackboard.ts        # 共享黑板（goal / notes / draft / log）
 │   │   ├── researcher.ts        # 研究员：search_notes + write_notes
 │   │   ├── writer.ts            # 写手：无工具，只读黑板成稿
 │   │   ├── kb.ts                # 本地笔记切块与检索
 │   │   └── knowledge/           # 差旅报销、入职须知等笔记
+│   ├── 11-obs-eval/             # 可观测性 + 评测版（默认启动入口）
+│   │   ├── agent.ts             # 单次运行：答一题并保存 Trace
+│   │   ├── eval.ts              # 批量评测：跑 cases.json 并断言
+│   │   ├── runner.ts            # ReAct 循环 + 埋点
+│   │   ├── trace.ts             # Tracer：事件记录与落盘
+│   │   ├── kb.ts                # 政策知识库检索
+│   │   ├── knowledge/           # 退款政策等
+│   │   └── evals/cases.json     # 评测用例（expect / forbid）
 │   ├── prompt.ts                # 可配置的 Agent System Prompt 构建器（02～05）
 │   ├── tools.ts                 # 05 版工具定义
 │   ├── memory.ts                # 会话过长时压缩为摘要
 │   └── profile.ts               # 用户长期偏好读写
+├── traces/                      # 运行时 Trace JSON（traces/run-*.json，已忽略）
 ├── plans/                       # 运行时生成的计划 JSON（plans/plan_*.json）
 ├── output/                      # 执行器输出的草稿（如 draft.md）
 ├── profile.json                 # 05 版用户档案
@@ -84,6 +94,7 @@ min-agent/
 7. **08**：同一知识库下对比「烂工具 / 好工具」，体会工具说明书与返回契约的重要性
 8. **09**：用 LangGraph 把手搓循环改成状态图（`llmCall` ↔ `toolNode` + 条件边）
 9. **10**：多 Agent 最小协作 — 研究员检索并写入黑板，写手只读 notes 成稿
+10. **11**：给 Agent 加 Trace 与评测集，让行为可回放、可回归
 
 ## 快速开始
 
@@ -113,16 +124,24 @@ DEEPSEEK_API_KEY=sk-你的密钥
 
 ### 3. 启动
 
-默认运行 `src/10-multi-agent/agent.ts`（研究员 → 写手）：
+默认运行 `src/11-obs-eval/agent.ts`（带 Trace 的政策助理）：
 
 ```bash
 npm start
 ```
 
-不传参数时使用内置示例目标（根据笔记写「杭州差旅报销要点」）。自定义目标：
+不传参数时使用内置示例目标（退款审核时效）。自定义目标：
 
 ```bash
-npm start -- 根据笔记，写一段入职第一周的注意事项给新同事看
+npm start -- 签收后几天内可以无理由退款？请给出依据和来源。
+```
+
+跑完后会在 `traces/` 写入一份 `run-*.json`。
+
+批量评测（读 `evals/cases.json`，失败则 exit 1）：
+
+```bash
+npm run eval
 ```
 
 运行其他版本：
@@ -139,6 +158,8 @@ npx tsx src/08-tool-design/agent.ts --good
 npx tsx src/08-tool-design/agent.ts --bad
 npx tsx src/09-langgraph.ts
 npx tsx src/10-multi-agent/agent.ts
+npx tsx src/11-obs-eval/agent.ts
+npx tsx src/11-obs-eval/eval.ts
 ```
 
 05 / 07 / 08 为交互式 CLI，启动后输入问题；输入 `exit` 或 `quit` 退出。
@@ -148,6 +169,36 @@ npx tsx src/10-multi-agent/agent.ts
 ```bash
 npm run typecheck
 ```
+
+## 11 可观测性与评测版
+
+11 在「会调用 `search_policy` 的政策助理」之上，补上两条工程能力：**Trace（可回放）** 与 **Eval（可回归）**。
+
+```text
+goal
+  → runner（ReAct + search_policy）
+  → Tracer.record(llm / tool / final)
+  → traces/run-*.json
+  → eval.ts 按 cases.json 断言 PASS/FAIL
+```
+
+| 模块 | 职责 |
+| --- | --- |
+| `trace.ts` | `Tracer`：记录事件、汇总 `toolNames` / `finalAnswer`，落盘 JSON |
+| `runner.ts` | 政策问答 ReAct 循环，每步埋点 |
+| `agent.ts` | 单次运行入口 |
+| `eval.ts` | 批量跑用例并检查 expect / forbid |
+| `evals/cases.json` | 评测题：期望调用的工具、答复须包含/禁止出现的片段 |
+
+内置用例示例：
+
+| id | 考查点 |
+| --- | --- |
+| `refund-sla` | 必须调用 `search_policy`，答复含「工作日」「来源」 |
+| `unknown-topic` | 未知话题仍应检索；禁止编造「30天年假」 |
+| `must-search` | 无理由退款时效须检索，答复含「7」 |
+
+可直接改 `cases.json` 扩题，不必改评测引擎。
 
 ## 10 多 Agent 协作版
 
@@ -265,12 +316,14 @@ DeepSeek 通过 OpenAI 兼容协议接入：`ChatOpenAI` + `baseURL: https://api
 6. **07 / 08**：先检索本地知识块，再据 Observation 作答；08 额外对比工具契约质量
 7. **09**：用 StateGraph 显式表达「决策节点 / 执行节点 / 条件边」，替代手写 while
 8. **10**：研究员写黑板 → 写手读黑板；协作靠结构化 notes，而不是拼接两段聊天记录
+9. **11**：运行时写入 Trace；评测集断言工具调用与答复内容，形成最小回归闭环
 
 ## 常用脚本
 
 | 命令 | 说明 |
 | --- | --- |
-| `npm start` | 启动默认 Agent（`src/10-multi-agent/agent.ts`） |
+| `npm start` | 启动默认 Agent（`src/11-obs-eval/agent.ts`），并保存 Trace |
+| `npm run eval` | 跑 `11-obs-eval` 评测集，失败非 0 退出 |
 | `npm run typecheck` | `tsc --noEmit` 类型检查 |
 
 ## 许可
