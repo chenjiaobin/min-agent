@@ -5,7 +5,8 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "tsx src/10-multi-agent/agent.ts",
+    "start": "tsx src/11-obs-eval/agent.ts",
+    "eval": "tsx src/11-obs-eval/eval.ts",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],

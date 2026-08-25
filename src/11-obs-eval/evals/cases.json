@@ -1,0 +1,28 @@
+[
+  {
+    "id": "refund-sla",
+    "goal": "退款审核大概要几天？请给出依据和来源。",
+    "expect": {
+      "tools": ["search_policy"],
+      "answerIncludes": ["工作日", "来源"]
+    }
+  },
+  {
+    "id": "unknown-topic",
+    "goal": "我们月球基地的年假是多少天？",
+    "expect": {
+      "tools": ["search_policy"]
+    },
+    "forbid": {
+      "answerIncludes": ["30天年假", "30 天年假"]
+    }
+  },
+  {
+    "id": "must-search",
+    "goal": "签收后几天内可以无理由退款？",
+    "expect": {
+      "tools": ["search_policy"],
+      "answerIncludes": ["7"]
+    }
+  }
+]
