@@ -11,6 +11,7 @@
 - **LangGraph** 状态图 Agent（图编排 + 条件边）
 - **多 Agent 协作**（研究员检索写黑板 → 写手只读成稿）
 - **可观测性与评测**（Trace 落盘 + 用例断言）
+- **上线刹车**（工具 allowlist、危险操作确认、步数/工具预算降级）
 
 ## 环境要求
 
@@ -58,7 +59,7 @@ min-agent/
 │   │   ├── writer.ts            # 写手：无工具，只读黑板成稿
 │   │   ├── kb.ts                # 本地笔记切块与检索
 │   │   └── knowledge/           # 差旅报销、入职须知等笔记
-│   ├── 11-obs-eval/             # 可观测性 + 评测版（默认启动入口）
+│   ├── 11-obs-eval/             # 可观测性 + 评测版
 │   │   ├── agent.ts             # 单次运行：答一题并保存 Trace
 │   │   ├── eval.ts              # 批量评测：跑 cases.json 并断言
 │   │   ├── runner.ts            # ReAct 循环 + 埋点
@@ -66,6 +67,12 @@ min-agent/
 │   │   ├── kb.ts                # 政策知识库检索
 │   │   ├── knowledge/           # 退款政策等
 │   │   └── evals/cases.json     # 评测用例（expect / forbid）
+│   ├── 12-go-live/              # 上线清单版（默认启动入口）
+│   │   ├── agent.ts             # 入口：带刹车的政策助理
+│   │   ├── tools.ts             # allowlist + 危险工具人工确认
+│   │   ├── budget.ts            # 步数 / 工具次数预算
+│   │   ├── kb.ts                # 政策知识库检索
+│   │   └── knowledge/           # 退款政策等
 │   ├── prompt.ts                # 可配置的 Agent System Prompt 构建器（02～05）
 │   ├── tools.ts                 # 05 版工具定义
 │   ├── memory.ts                # 会话过长时压缩为摘要
@@ -95,6 +102,7 @@ min-agent/
 8. **09**：用 LangGraph 把手搓循环改成状态图（`llmCall` ↔ `toolNode` + 条件边）
 9. **10**：多 Agent 最小协作 — 研究员检索并写入黑板，写手只读 notes 成稿
 10. **11**：给 Agent 加 Trace 与评测集，让行为可回放、可回归
+11. **12**：上线清单 — allowlist、危险确认、预算降级，防止 Agent「刹不住」
 
 ## 快速开始
 
@@ -124,21 +132,28 @@ DEEPSEEK_API_KEY=sk-你的密钥
 
 ### 3. 启动
 
-默认运行 `src/11-obs-eval/agent.ts`（带 Trace 的政策助理）：
+默认运行 `src/12-go-live/agent.ts`（带上线刹车的政策助理）：
 
 ```bash
 npm start
 ```
 
-不传参数时使用内置示例目标（退款审核时效）。自定义目标：
+不传参数时使用内置示例目标（把退款时效发通知给 `all@company.com`）。会先检索政策，再对 `send_notice` 弹出确认：
 
-```bash
-npm start -- 签收后几天内可以无理由退款？请给出依据和来源。
+```text
+确认执行？(y/N)
 ```
 
-跑完后会在 `traces/` 写入一份 `run-*.json`。
+输入 `y` 才模拟发送；`N` 或回车则返回 `user_denied`，模型应说明未发送。
 
-批量评测（读 `evals/cases.json`，失败则 exit 1）：
+自定义目标：
+
+```bash
+npm start -- 签收后几天内可以无理由退款？
+npm start -- 把退款时效发通知给 all@company.com
+```
+
+批量评测（仍指向第 11 篇）：
 
 ```bash
 npm run eval
@@ -160,15 +175,45 @@ npx tsx src/09-langgraph.ts
 npx tsx src/10-multi-agent/agent.ts
 npx tsx src/11-obs-eval/agent.ts
 npx tsx src/11-obs-eval/eval.ts
+npx tsx src/12-go-live/agent.ts
 ```
 
-05 / 07 / 08 为交互式 CLI，启动后输入问题；输入 `exit` 或 `quit` 退出。
+05 / 07 / 08 为交互式 CLI，启动后输入问题；输入 `exit` 或 `quit` 退出。12 在危险工具处也会交互确认。
 
 ### 4. 类型检查（可选）
 
 ```bash
 npm run typecheck
 ```
+
+## 12 上线清单版
+
+12 演示 Agent「上线前该装的刹车」：不只会答政策，还要管住工具副作用与资源消耗。
+
+```text
+goal
+  → LLM（预算内）
+  → tool_calls
+       ├─ 不在 allowlist → tool_not_allowed
+       ├─ 危险工具未确认 → user_denied
+       ├─ 工具次数用尽 → 写回 tip，请模型收尾
+       └─ 通过闸门 → 执行（search_policy / 模拟 send_notice）
+  → 最终答复或预算降级收尾
+```
+
+| 刹车 | 模块 | 行为 |
+| --- | --- | --- |
+| 工具 allowlist | `tools.ts` `ALLOWED_TOOLS` | 模型幻觉出未授权工具名时直接拒绝 |
+| 危险确认 | `CONFIRM_REQUIRED`（含 `send_notice`） | 终端 `y/N` 确认后才执行 |
+| 步数预算 | `budget.ts` 默认 `maxSteps=6` | 超限抛 `max_steps`，安全收尾 |
+| 工具次数预算 | 默认 `maxToolCalls=4` | 超限写 Observation tip，禁止继续狂调工具 |
+
+工具：
+
+| 工具 | 风险 | 说明 |
+| --- | --- | --- |
+| `search_policy` | 只读 | 检索本地退款政策 |
+| `send_notice` | 会改外部世界 | 需人工确认；Demo 仅模拟发送 |
 
 ## 11 可观测性与评测版
 
@@ -317,12 +362,13 @@ DeepSeek 通过 OpenAI 兼容协议接入：`ChatOpenAI` + `baseURL: https://api
 7. **09**：用 StateGraph 显式表达「决策节点 / 执行节点 / 条件边」，替代手写 while
 8. **10**：研究员写黑板 → 写手读黑板；协作靠结构化 notes，而不是拼接两段聊天记录
 9. **11**：运行时写入 Trace；评测集断言工具调用与答复内容，形成最小回归闭环
+10. **12**：allowlist + 危险确认 + 预算降级，把「能跑」推进到「敢上线」
 
 ## 常用脚本
 
 | 命令 | 说明 |
 | --- | --- |
-| `npm start` | 启动默认 Agent（`src/11-obs-eval/agent.ts`），并保存 Trace |
+| `npm start` | 启动默认 Agent（`src/12-go-live/agent.ts`） |
 | `npm run eval` | 跑 `11-obs-eval` 评测集，失败非 0 退出 |
 | `npm run typecheck` | `tsc --noEmit` 类型检查 |
 
